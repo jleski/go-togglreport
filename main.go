@@ -1,19 +1,18 @@
 package main
 
 import (
-	"fmt"
-	"net/http"
-	"encoding/json"
-	"io/ioutil"
-	"net/url"
-	"errors"
-	"time"
-	"strings"
-	"unicode/utf8"
-	"os"
-	"bytes"
+"fmt"
+"net/http"
+"encoding/json"
+"io/ioutil"
+"net/url"
+"errors"
+"time"
+"strings"
+"unicode/utf8"
+"os"
+"bytes"
 	"log"
-	"strconv"
 )
 
 type Hours struct {
@@ -74,15 +73,16 @@ type ProjectEntry struct {
 	ProjectId int32
 }
 
-func constructMappings() Mappings{
-	return Mappings{
-		Workspaces: []WorkspaceMapping{
-			{Wid:99999,Description:"Main Workspace"},
-		},
-		Projects: []ProjectMapping{
-			{ProjectId:999, Pid:12345678,Description:"Test Project/Task"},
-		},
-	}
+type Config struct {
+	Mappings `json:"mappings"`
+	Debug bool `json:"debug"`
+	Api_url string `json:"api_url"`
+	Api_endpoint string `json:"api_endpoint"`
+	Time_constant string `json:"time_constant"`
+	Default_workspace WorkspaceMapping `json:"default_workspace"`
+	Default_project ProjectMapping `json:"default_project"`
+	Pretty_print bool `json:"pretty_print"`
+	Disable_slack bool `json:"disable_slack"`
 }
 
 func resolveMapping( m Mappings, e Entry ) (W WorkspaceMapping, P ProjectMapping, err error) {
@@ -95,9 +95,19 @@ func resolveMapping( m Mappings, e Entry ) (W WorkspaceMapping, P ProjectMapping
 	return WorkspaceMapping{}, ProjectMapping{}, errors.New(fmt.Sprintf("Unknown workspace %d", e.Wid))
 }
 
+func azWrite(file string, str string) {
+	// just write the length to the queue location. Just to prove this works.
+	cacheFile, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE, 0)
+	if err != nil {
+		log.Fatalf("Unable to open file %s %s", file, err)
+	}
+	cacheFile.WriteString( str + "\n")
+	cacheFile.Close()
+}
+
 // simple function to post a string to slack api app
-func slackBot(url string, s string) {
-	fmt.Println("Posting to Slack API using Webhook URL: ", url)
+func slackBot(url string, s string, az string) {
+	if az != "" { azWrite( az, fmt.Sprintln("Posting to Slack API using Webhook URL: ", url) )	} else { fmt.Println("Posting to Slack API using Webhook URL: ", url) }
 	s = "```" + s + "```"
 	var jsonStr = []byte(`{"text":"Dear sir, here's your Toggl Report:\n` + s + `"}`)
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonStr))
@@ -112,37 +122,65 @@ func slackBot(url string, s string) {
 	body, _ := ioutil.ReadAll(resp.Body)
 
 	if resp.StatusCode != 200 {
-		panic("Slack ERROR: " + string(resp.StatusCode) + ", " + string(body))
+		if az != "" { azWrite(az, fmt.Sprintln("Slack ERROR: " + string(resp.StatusCode) + ", " + string(body))) } else { panic("Slack ERROR: " + string(resp.StatusCode) + ", " + string(body)) }
 	} else if string(body) == "ok" {
-		fmt.Println("Report sent successfully.")
+		if az != "" { azWrite(az, fmt.Sprintln("Report sent successfully.")) } else {	fmt.Println("Report sent successfully.") }
 	}
 }
 
-func main() {
-	if len(os.Args) < 2 {
-		fmt.Printf("Usage: %s <api_token> [slack_webhook_url]\n", os.Args[0])
-		fmt.Println("\t api_token \t\t\t - (reqquired) Toggl API Token")
-		fmt.Println("\t slack_webhook_url \t - (optional) Webhook URL to Slack API Application")
-		return
+func LoadConfiguration(file string) Config {
+	var config Config
+	configFile, err := os.Open(file)
+	defer configFile.Close()
+	if err != nil {
+		fmt.Println(err.Error())
 	}
-	// begin configuration
-	// TODO: Make this a configuration object (type struct)
-	var debug = true; debug = false
-	var useSlack = false
-	var slack_url = ""
-	var username string = os.Args[1]
-	var passwd string = "api_token"
-	var api_url string = "https://www.toggl.com/api/v8"
-	var api_endpoint string = "/time_entries"
-	var date_const string = "T00:00:00+02:00"
-	var date_from string = fmt.Sprintf("%s%s", time.Now().Format("2006-01-02"), date_const)
-	//var date_from string = fmt.Sprintf("%s%s", "2018-01-23", date_const) // for testing, enter custom date
-	var m = constructMappings()
+	jsonParser := json.NewDecoder(configFile)
+	jsonParser.Decode(&config)
+	return config
+}
+
+func main() {
+	username := ""
+	useSlack := false
+	slack_url := ""
+	az_output := ""
+	if len(os.Args) < 2 {
+		if os.Getenv("AZURE_FUNCTIONS_ENV") != "" {
+			if os.Getenv("toggl_api_token") != "" { username = os.Getenv("toggl_api_token")}
+			if os.Getenv("slack_webhook_url") != "" { useSlack = true; slack_url = os.Getenv("slack_webhook_url")}
+		} else {
+			fmt.Printf("Usage: %s <api_token> [slack_webhook_url]\n", os.Args[0])
+			fmt.Println("\t api_token \t\t\t - (reqquired) Toggl API Token")
+			fmt.Println("\t slack_webhook_url \t - (optional) Webhook URL to Slack API Application")
+			return
+		}
+	} else {
+		username = os.Args[1]
+		if len(os.Args) == 3 { useSlack = true; slack_url = os.Args[2] }
+	}
+
+	// ================ begin configuration ================
+	config_file := "config.json"
+	conf := LoadConfiguration(config_file)
+	debug := conf.Debug
+	passwd := "api_token" // this is hard-coded by Toggl
+	api_url := conf.Api_url
+	api_endpoint := conf.Api_endpoint
+	date_const := conf.Time_constant
+	date_from := fmt.Sprintf("%s%s", time.Now().Format("2006-01-02"), date_const)
+	//date_from := fmt.Sprintf("%s%s", "2018-01-31", date_const) // for testing, enter custom date
+	if conf.Disable_slack {
+		if debug {
+			fmt.Println("Disabled Slack integration (config.json)")
+		}
+		useSlack = false
+	}
+	var m = conf.Mappings
 	var pe = make(map[int32]*ProjectEntry)
 	var total = HoursForPeriod{}
-	// end configuration
-	if len(os.Args) == 3 { useSlack = true; slack_url = os.Args[2]}
-	// TODO: split app logic to functions
+	// ================ end configuration ================
+
 	if debug { fmt.Printf("Querying time entries for date: %s\n", date_from) }
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", fmt.Sprintf("%s%s?start_date=%s", api_url, api_endpoint, url.QueryEscape(date_from)), nil)
@@ -168,7 +206,17 @@ func main() {
 		}
 		if debug { fmt.Printf("%d\t%d\t%s\t%s\n", obj.Wid, obj.Pid, obj.Description, obj.Start) }
 		w, p, err := resolveMapping( m, obj )
-		if debug { if err != nil { fmt.Printf( "\tERROR matching entry: %s\n", err.Error()); continue } }
+		if debug {
+			if err != nil {
+				fmt.Printf( "\tERROR matching entry: %s\n", err.Error())
+			}
+		}
+		if err != nil {
+			w = conf.Default_workspace
+			p = conf.Default_project
+			p.Description = fmt.Sprintf(p.Description, obj.Description)
+			w.Description = fmt.Sprintf(w.Description, obj.Wid)
+		}
 		var h = &Hours{}
 		var durationAsInt = int16(0)
 		if obj.Duration < 0 {
@@ -194,7 +242,10 @@ func main() {
 		} else {
 			pe[p.ProjectId].Entries = append(pe[p.ProjectId].Entries, obj)
 			pe[p.ProjectId].Duration += int32(durationAsInt)
-			pe[p.ProjectId].Description += " " + p.Description
+			// TODO: This is not unicode-safe, should use strings.ContainsRune() instead
+			if !strings.Contains(pe[p.ProjectId].Description, p.Description) {
+				pe[p.ProjectId].Description += " " + p.Description
+			}
 			pe[p.ProjectId].Total += float32(h.Float)
 		}
 		// sum hours per project
@@ -210,18 +261,28 @@ func main() {
 	total.TotalMinutes = (TotalDurationAsInt16 - (total.TotalHours * 60 * 60)) / 60
 	total.TotalSeconds = TotalDurationAsInt16 - (total.TotalHours * 60 * 60) - (total.TotalMinutes * 60)
 	total.TotalFloat = float32(total.TotalHours) + (float32(total.TotalMinutes) / 60) + (float32(total.TotalSeconds / 3600))
-	if debug { fmt.Printf("\nAccumulated total time for the period: %dh %dm %ds (%.2fh)\n", total.TotalHours, total.TotalMinutes, total.TotalSeconds, total.TotalFloat) }
+	total_string := fmt.Sprintf("Accumulated total time for the period: %dh %dm %ds (%.2fh)\n", total.TotalHours, total.TotalMinutes, total.TotalSeconds, total.TotalFloat)
+	if debug {  fmt.Printf("%s", total_string)}
 	// ############# REPORT #############
 	if debug { fmt.Println("Generating report...") }
 	var report = ""
-	report += fmt.Sprintf(".%-12s+%-11s+%-8s+%-82s,\n", strings.Repeat("-", 12), strings.Repeat("-", 11), strings.Repeat("-", 8), strings.Repeat("-", 82))
-	report += fmt.Sprintf("| %-10s | %-9s | %-6s | %-80s |\n", "Date", "Project", "Hours", "Description")
-	report += fmt.Sprintf("|%-12s|%-11s|%-8s|%-82s|\n", strings.Repeat("-", 12), strings.Repeat("-", 11), strings.Repeat("-", 8), strings.Repeat("-", 82))
-	for k, v := range pe {
-		report += fmt.Sprintf("| %-10s | %-9d | %-6.1f | %-80s |\n", v.Date.Format("2006-01-02"), k, v.Total, v.Description)
+	if conf.Pretty_print {
+		report += fmt.Sprintf(".%-12s+%-11s+%-8s+%-82s,\n", strings.Repeat("-", 12), strings.Repeat("-", 11), strings.Repeat("-", 8), strings.Repeat("-", 82))
+		report += fmt.Sprintf("| %-10s | %-9s | %-6s | %-80s |\n", "Date", "Project", "Hours", "Description")
+		report += fmt.Sprintf("|%-12s|%-11s|%-8s|%-82s|\n", strings.Repeat("-", 12), strings.Repeat("-", 11), strings.Repeat("-", 8), strings.Repeat("-", 82))
 	}
-	report += fmt.Sprintf("`%-12s+%-11s+%-8s+%-82s´\n", strings.Repeat("-", 12), strings.Repeat("-", 11), strings.Repeat("-", 8), strings.Repeat("-", 82))
-	if useSlack { slackBot(slack_url, report) } else { fmt.Print(report) }
+	for k, v := range pe {
+		if conf.Pretty_print {
+			report += fmt.Sprintf("| %-10s | %-9d | %-6.1f | %-80s |\n", v.Date.Format("2006-01-02"), k, v.Total, v.Description)
+		} else {
+			report += fmt.Sprintf("Date: %s\nProject: %d\nHours: %.1f\nDescription: %s\n\n", v.Date.Format("2006-01-02"), k, v.Total, v.Description)
+		}
+	}
+	if conf.Pretty_print {
+		report += fmt.Sprintf("`%-12s+%-11s+%-8s+%-82s´\n", strings.Repeat("-", 12), strings.Repeat("-", 11), strings.Repeat("-", 8), strings.Repeat("-", 82))
+	}
+	report += fmt.Sprintf("%s", total_string)
+	if useSlack { slackBot(slack_url, report, az_output) } else { fmt.Print(report) }
 	/*
 	// For debugging print the project map:
 	b, _ := json.MarshalIndent(pe, "", "  ")
