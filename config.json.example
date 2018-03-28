@@ -1,0 +1,31 @@
+{
+  "mappings": {
+    "workspaces": [
+      {
+        "Wid": 123456,
+        "Description": "Example Workspace"
+      }
+    ],
+    "projects": [
+      {
+        "ProjectId": 112233,
+        "Pid": 12345678,
+        "Description": "Example Project Task, mapped from Pid to ProjectId"
+      }
+    ]
+  },
+  "default_workspace": {
+    "Wid": 123456,
+    "Description": "Unknown workspace (%d)"
+  },
+  "default_project": {
+    "ProjectId": 112233,
+    "Description": "U(%s)"
+  },
+  "debug": false
+  "api_url": "https://www.toggl.com/api/v8",
+  "api_endpoint": "/time_entries",
+  "time_constant": "T00:00:00+02:00",
+  "pretty_print": true,
+  "disable_slack": true
+}
